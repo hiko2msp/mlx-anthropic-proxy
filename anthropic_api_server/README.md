@@ -7,6 +7,7 @@ This project provides a high-performance, Anthropic Messages API compatible serv
 - **Anthropic Messages API Compatibility**: Implements the `/v1/messages` endpoint, supporting the official message structure.
 - **Dual Backend Support**: Choose between `llama-cpp` for cross-platform compatibility (Linux, Windows, macOS) or `mlx` for optimized performance on Apple Silicon.
 - **Streaming & Non-Streaming**: Supports both `stream: true` for real-time token streaming (Server-Sent Events) and `stream: false` for single JSON responses.
+- **Interleaved Thinking Support**: For streaming requests, the server can parse `<thinking>` and `</thinking>` tags from the model's output to create distinct "thought" and "text" content blocks, fully compliant with the Anthropic API spec.
 - **Dynamic Model Loading**: Specify a model on startup via environment variables. For `llama-cpp`, models can be automatically downloaded from Hugging Face Hub if not found locally.
 - **Configuration via Environment Variables**: Easily configure the backend, model path, and backend-specific parameters.
 

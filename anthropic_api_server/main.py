@@ -23,7 +23,7 @@ class Message(BaseModel):
 
 class ChatCompletionRequest(BaseModel):
     messages: List[Message]
-    model: str  # Although we load one model, the API spec requires this field.
+    model: str
     max_tokens: int = 1024
     temperature: float = 0.8
     stop: Optional[List[str]] = None
@@ -46,10 +46,6 @@ BACKEND_MAPPING = {
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Manages the model's lifecycle. The model is loaded on startup and
-    kept in memory until the server shuts down.
-    """
     backend_type = os.environ.get("BACKEND_TYPE", "llama_cpp").lower()
     model_path = os.environ.get("MODEL_PATH")
 
@@ -66,7 +62,6 @@ async def lifespan(app: FastAPI):
     backend_class = BACKEND_MAPPING[backend_type]
 
     try:
-        # Generalize backend kwarg passing from environment variables
         backend_kwargs = {}
         prefix_map = {
             "GGUF_": "llama_cpp",
@@ -79,7 +74,6 @@ async def lifespan(app: FastAPI):
             for k, v in os.environ.items():
                 if k.upper().startswith(target_prefix):
                     key = k.lower().replace(target_prefix.lower(), "")
-                    # Convert numerical strings to integers
                     if v.isdigit():
                         backend_kwargs[key] = int(v)
                     else:
@@ -93,14 +87,9 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Clean up resources on shutdown
     if hasattr(app.state, "backend") and app.state.backend:
         del app.state.backend
     logger.info("Backend resources cleaned up.")
-
-# --- FastAPI App Initialization ---
-
-app = FastAPI(lifespan=lifespan)
 
 # --- API Endpoint ---
 
@@ -108,11 +97,16 @@ def generate_sse_chunk(event: str, data: Dict[str, Any]) -> str:
     """Formats a dictionary into a Server-Sent Event string."""
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
+# --- FastAPI App Initialization ---
+
+app = FastAPI(lifespan=lifespan)
+
 async def stream_generator(backend: BaseBackend, request: ChatCompletionRequest, request_id: str, model_name: str) -> Generator[str, None, None]:
     """
-    A generator function that yields SSE formatted chunks for streaming responses.
+    A stateful generator that parses model output for <thinking> tags and yields
+    a structured, interleaved SSE stream compliant with the Anthropic API.
     """
-    # 1. Send the message_start event
+    # 1. Send message_start event
     start_data = {
         "type": "message_start",
         "message": {
@@ -123,12 +117,11 @@ async def stream_generator(backend: BaseBackend, request: ChatCompletionRequest,
             "model": model_name,
             "stop_reason": None,
             "stop_sequence": None,
-            "usage": {"input_tokens": 0, "output_tokens": 0}, # Placeholder
+            "usage": {"input_tokens": 0, "output_tokens": 0},
         },
     }
     yield generate_sse_chunk("message_start", start_data)
 
-    # 2. Stream content_block_delta events
     content_generator = backend.create_generator(
         messages=[msg.model_dump() for msg in request.messages],
         max_tokens=request.max_tokens,
@@ -136,24 +129,81 @@ async def stream_generator(backend: BaseBackend, request: ChatCompletionRequest,
         stop=request.stop,
     )
 
-    for text_chunk in content_generator:
-        delta_data = {
-            "type": "content_block_delta",
-            "index": 0,  # The index should be constant for a single content block
-            "delta": {"type": "text_delta", "text": text_chunk},
-        }
-        yield generate_sse_chunk("content_block_delta", delta_data)
+    # State machine variables
+    buffer = ""
+    state = "text"  # Can be 'text' or 'thinking'
+    block_index = 0
 
-    # 3. Send the message_stop event
-    stop_data = {"type": "message_stop", "amazon-bedrock-invocationMetrics": {}} # Placeholder
+    # Start the first content block (always 'text')
+    yield generate_sse_chunk("content_block_start", {"type": "content_block_start", "index": block_index, "content_block": {"type": "text", "text": ""}})
+
+    for text_chunk in content_generator:
+        buffer += text_chunk
+
+        # Process buffer for thinking tags
+        while True:
+            if state == "text":
+                if "<thinking>" in buffer:
+                    # Split buffer at the start of the thinking block
+                    before_think, after_think = buffer.split("<thinking>", 1)
+
+                    # Yield any text before the tag
+                    if before_think:
+                        yield generate_sse_chunk("content_block_delta", {"type": "content_block_delta", "index": block_index, "delta": {"type": "text_delta", "text": before_think}})
+
+                    # Stop the current text block
+                    yield generate_sse_chunk("content_block_stop", {"type": "content_block_stop", "index": block_index})
+
+                    # Start a new thinking block
+                    block_index += 1
+                    state = "thinking"
+                    yield generate_sse_chunk("content_block_start", {"type": "content_block_start", "index": block_index, "content_block": {"type": "text", "text": ""}}) # Anthropic uses 'text' type even for thinking
+
+                    buffer = after_think
+                else:
+                    # No tag found, yield the whole buffer and clear it
+                    yield generate_sse_chunk("content_block_delta", {"type": "content_block_delta", "index": block_index, "delta": {"type": "text_delta", "text": buffer}})
+                    buffer = ""
+                    break # Exit the while loop
+
+            elif state == "thinking":
+                if "</thinking>" in buffer:
+                    # Split buffer at the end of the thinking block
+                    thought, after_thought = buffer.split("</thinking>", 1)
+
+                    # Yield the thought content
+                    if thought:
+                        yield generate_sse_chunk("content_block_delta", {"type": "content_block_delta", "index": block_index, "delta": {"type": "text_delta", "text": thought}})
+
+                    # Stop the thinking block
+                    yield generate_sse_chunk("content_block_stop", {"type": "content_block_stop", "index": block_index})
+
+                    # Start a new text block for the final answer
+                    block_index += 1
+                    state = "text"
+                    yield generate_sse_chunk("content_block_start", {"type": "content_block_start", "index": block_index, "content_block": {"type": "text", "text": ""}})
+
+                    buffer = after_thought
+                else:
+                    # No closing tag found, yield the whole buffer and clear it
+                    yield generate_sse_chunk("content_block_delta", {"type": "content_block_delta", "index": block_index, "delta": {"type": "text_delta", "text": buffer}})
+                    buffer = ""
+                    break # Exit the while loop
+
+    # After the loop, yield any remaining text in the buffer
+    if buffer:
+        yield generate_sse_chunk("content_block_delta", {"type": "content_block_delta", "index": block_index, "delta": {"type": "text_delta", "text": buffer}})
+
+    # Stop the final content block
+    yield generate_sse_chunk("content_block_stop", {"type": "content_block_stop", "index": block_index})
+
+    # Send the message_stop event
+    stop_data = {"type": "message_stop", "amazon-bedrock-invocationMetrics": {}}
     yield generate_sse_chunk("message_stop", stop_data)
 
 
 @app.post("/v1/messages")
 async def create_message(raw_request: Request):
-    """
-    Handles chat completion requests, supporting both streaming and non-streaming.
-    """
     body = await raw_request.json()
     request = ChatCompletionRequest.model_validate(body)
 
@@ -165,13 +215,12 @@ async def create_message(raw_request: Request):
     model_name = request.model
 
     if request.stream:
-        # Return a streaming response
         return StreamingResponse(
             stream_generator(backend, request, request_id, model_name),
             media_type="text/event-stream",
         )
     else:
-        # Handle non-streaming response
+        # Non-streaming remains the same, it doesn't support interleaved thinking
         content_generator = backend.create_generator(
             messages=[msg.model_dump() for msg in request.messages],
             max_tokens=request.max_tokens,
@@ -189,7 +238,7 @@ async def create_message(raw_request: Request):
             "content": [{"type": "text", "text": full_content}],
             "stop_reason": "end_turn",
             "stop_sequence": None,
-            "usage": {"input_tokens": 0, "output_tokens": 0}, # Placeholder
+            "usage": {"input_tokens": 0, "output_tokens": 0},
         }
         return response_data
 
