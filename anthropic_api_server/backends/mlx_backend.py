@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, Generator
+from typing import Any, Dict, Generator, List, Optional
 
 from .base import BaseBackend
 
@@ -6,8 +6,9 @@ from .base import BaseBackend
 # We use a try-except block to handle the import error gracefully
 # on other platforms.
 try:
-    from mlx_engine.generate import load_model, create_generator
+    from mlx_engine.generate import create_generator, load_model
     from transformers import AutoTokenizer
+
     MLX_ENGINE_AVAILABLE = True
 except ImportError:
     # If the import fails, we set a flag and the backend will not be usable.
@@ -44,7 +45,6 @@ class MlxBackend(BaseBackend):
         self.model_kit = load_model(model_path, **kwargs)
         print("MLX model loaded successfully.")
 
-
     def create_generator(
         self,
         messages: List[Dict[str, Any]],
@@ -56,15 +56,13 @@ class MlxBackend(BaseBackend):
         Creates a generator that yields text chunks using mlx-engine.
         """
         if not MLX_ENGINE_AVAILABLE:
-             # This check is redundant if the constructor already ran,
-             # but it's good practice for safety.
+            # This check is redundant if the constructor already ran,
+            # but it's good practice for safety.
             raise RuntimeError("MLX Engine backend is not available.")
 
         # 1. Apply the chat template to the messages
         prompt = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True
+            messages, tokenize=False, add_generation_prompt=True
         )
 
         # 2. Tokenize the resulting prompt string

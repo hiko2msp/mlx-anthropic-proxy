@@ -1,14 +1,13 @@
-import os
 import json
-import time
-import uuid
 import logging
+import os
+import uuid
 from contextlib import asynccontextmanager
+from typing import Any, Dict, Generator, List, Literal, Optional
 
 from fastapi import FastAPI, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from starlette.responses import StreamingResponse
-from typing import List, Literal, Optional, Dict, Any, Generator
 
 # Import backend classes
 from .backends.base import BaseBackend
@@ -17,9 +16,11 @@ from .backends.mlx_backend import MlxBackend
 
 # --- Pydantic Models for Anthropic Compatibility ---
 
+
 class Message(BaseModel):
     role: Literal["user", "assistant"]
     content: str
+
 
 class ChatCompletionRequest(BaseModel):
     messages: List[Message]
@@ -28,6 +29,7 @@ class ChatCompletionRequest(BaseModel):
     temperature: float = 0.8
     stop: Optional[List[str]] = None
     stream: bool = False
+
 
 # --- Logging Setup ---
 
@@ -43,6 +45,7 @@ BACKEND_MAPPING = {
 }
 
 # --- FastAPI Lifespan Management ---
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -63,10 +66,7 @@ async def lifespan(app: FastAPI):
 
     try:
         backend_kwargs = {}
-        prefix_map = {
-            "GGUF_": "llama_cpp",
-            "MLX_": "mlx"
-        }
+        prefix_map = {"GGUF_": "llama_cpp", "MLX_": "mlx"}
 
         if backend_type in prefix_map.values():
             target_prefix = [p for p, bt in prefix_map.items() if bt == backend_type][0]
@@ -91,17 +91,26 @@ async def lifespan(app: FastAPI):
         del app.state.backend
     logger.info("Backend resources cleaned up.")
 
+
 # --- API Endpoint ---
+
 
 def generate_sse_chunk(event: str, data: Dict[str, Any]) -> str:
     """Formats a dictionary into a Server-Sent Event string."""
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
+
 # --- FastAPI App Initialization ---
 
 app = FastAPI(lifespan=lifespan)
 
-async def stream_generator(backend: BaseBackend, request: ChatCompletionRequest, request_id: str, model_name: str) -> Generator[str, None, None]:
+
+async def stream_generator(
+    backend: BaseBackend,
+    request: ChatCompletionRequest,
+    request_id: str,
+    model_name: str,
+) -> Generator[str, None, None]:
     """
     A stateful generator that parses model output for <thinking> tags and yields
     a structured, interleaved SSE stream compliant with the Anthropic API.
@@ -135,7 +144,14 @@ async def stream_generator(backend: BaseBackend, request: ChatCompletionRequest,
     block_index = 0
 
     # Start the first content block (always 'text')
-    yield generate_sse_chunk("content_block_start", {"type": "content_block_start", "index": block_index, "content_block": {"type": "text", "text": ""}})
+    yield generate_sse_chunk(
+        "content_block_start",
+        {
+            "type": "content_block_start",
+            "index": block_index,
+            "content_block": {"type": "text", "text": ""},
+        },
+    )
 
     for text_chunk in content_generator:
         buffer += text_chunk
@@ -149,22 +165,46 @@ async def stream_generator(backend: BaseBackend, request: ChatCompletionRequest,
 
                     # Yield any text before the tag
                     if before_think:
-                        yield generate_sse_chunk("content_block_delta", {"type": "content_block_delta", "index": block_index, "delta": {"type": "text_delta", "text": before_think}})
+                        yield generate_sse_chunk(
+                            "content_block_delta",
+                            {
+                                "type": "content_block_delta",
+                                "index": block_index,
+                                "delta": {"type": "text_delta", "text": before_think},
+                            },
+                        )
 
                     # Stop the current text block
-                    yield generate_sse_chunk("content_block_stop", {"type": "content_block_stop", "index": block_index})
+                    yield generate_sse_chunk(
+                        "content_block_stop",
+                        {"type": "content_block_stop", "index": block_index},
+                    )
 
                     # Start a new thinking block
                     block_index += 1
                     state = "thinking"
-                    yield generate_sse_chunk("content_block_start", {"type": "content_block_start", "index": block_index, "content_block": {"type": "text", "text": ""}}) # Anthropic uses 'text' type even for thinking
+                    yield generate_sse_chunk(
+                        "content_block_start",
+                        {
+                            "type": "content_block_start",
+                            "index": block_index,
+                            "content_block": {"type": "text", "text": ""},
+                        },
+                    )  # Anthropic uses 'text' type even for thinking
 
                     buffer = after_think
                 else:
                     # No tag found, yield the whole buffer and clear it
-                    yield generate_sse_chunk("content_block_delta", {"type": "content_block_delta", "index": block_index, "delta": {"type": "text_delta", "text": buffer}})
+                    yield generate_sse_chunk(
+                        "content_block_delta",
+                        {
+                            "type": "content_block_delta",
+                            "index": block_index,
+                            "delta": {"type": "text_delta", "text": buffer},
+                        },
+                    )
                     buffer = ""
-                    break # Exit the while loop
+                    break  # Exit the while loop
 
             elif state == "thinking":
                 if "</thinking>" in buffer:
@@ -173,29 +213,62 @@ async def stream_generator(backend: BaseBackend, request: ChatCompletionRequest,
 
                     # Yield the thought content
                     if thought:
-                        yield generate_sse_chunk("content_block_delta", {"type": "content_block_delta", "index": block_index, "delta": {"type": "text_delta", "text": thought}})
+                        yield generate_sse_chunk(
+                            "content_block_delta",
+                            {
+                                "type": "content_block_delta",
+                                "index": block_index,
+                                "delta": {"type": "text_delta", "text": thought},
+                            },
+                        )
 
                     # Stop the thinking block
-                    yield generate_sse_chunk("content_block_stop", {"type": "content_block_stop", "index": block_index})
+                    yield generate_sse_chunk(
+                        "content_block_stop",
+                        {"type": "content_block_stop", "index": block_index},
+                    )
 
                     # Start a new text block for the final answer
                     block_index += 1
                     state = "text"
-                    yield generate_sse_chunk("content_block_start", {"type": "content_block_start", "index": block_index, "content_block": {"type": "text", "text": ""}})
+                    yield generate_sse_chunk(
+                        "content_block_start",
+                        {
+                            "type": "content_block_start",
+                            "index": block_index,
+                            "content_block": {"type": "text", "text": ""},
+                        },
+                    )
 
                     buffer = after_thought
                 else:
                     # No closing tag found, yield the whole buffer and clear it
-                    yield generate_sse_chunk("content_block_delta", {"type": "content_block_delta", "index": block_index, "delta": {"type": "text_delta", "text": buffer}})
+                    yield generate_sse_chunk(
+                        "content_block_delta",
+                        {
+                            "type": "content_block_delta",
+                            "index": block_index,
+                            "delta": {"type": "text_delta", "text": buffer},
+                        },
+                    )
                     buffer = ""
-                    break # Exit the while loop
+                    break  # Exit the while loop
 
     # After the loop, yield any remaining text in the buffer
     if buffer:
-        yield generate_sse_chunk("content_block_delta", {"type": "content_block_delta", "index": block_index, "delta": {"type": "text_delta", "text": buffer}})
+        yield generate_sse_chunk(
+            "content_block_delta",
+            {
+                "type": "content_block_delta",
+                "index": block_index,
+                "delta": {"type": "text_delta", "text": buffer},
+            },
+        )
 
     # Stop the final content block
-    yield generate_sse_chunk("content_block_stop", {"type": "content_block_stop", "index": block_index})
+    yield generate_sse_chunk(
+        "content_block_stop", {"type": "content_block_stop", "index": block_index}
+    )
 
     # Send the message_stop event
     stop_data = {"type": "message_stop", "amazon-bedrock-invocationMetrics": {}}
@@ -241,6 +314,7 @@ async def create_message(raw_request: Request):
             "usage": {"input_tokens": 0, "output_tokens": 0},
         }
         return response_data
+
 
 @app.get("/health")
 async def health_check():

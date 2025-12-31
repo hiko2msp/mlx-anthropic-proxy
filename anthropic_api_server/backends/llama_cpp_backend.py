@@ -1,10 +1,11 @@
 import os
-from typing import Any, Dict, List, Optional, Generator
+from typing import Any, Dict, Generator, List, Optional
 
 from huggingface_hub import hf_hub_download
 from llama_cpp import Llama
 
 from .base import BaseBackend
+
 
 class LlamaCppBackend(BaseBackend):
     """
@@ -31,19 +32,23 @@ class LlamaCppBackend(BaseBackend):
             try:
                 repo_id, filename = os.path.split(model_path)
                 if not repo_id or not filename:
-                    raise ValueError("Invalid model path format for Hugging Face download.")
+                    raise ValueError(
+                        "Invalid model path format for Hugging Face download."
+                    )
 
-                print(f"Model not found locally. Downloading '{filename}' from '{repo_id}'...")
+                print(
+                    f"Model not found locally. Downloading '{filename}' from '{repo_id}'..."
+                )
                 model_path = hf_hub_download(
                     repo_id=repo_id,
                     filename=filename,
                 )
                 print(f"Model downloaded to: {model_path}")
             except Exception as e:
-                 raise FileNotFoundError(
+                raise FileNotFoundError(
                     f"Failed to download model '{model_path}'. Please ensure it's a valid local path "
                     f"or a 'repo_id/filename' on Hugging Face Hub. Error: {e}"
-                 )
+                )
 
         llama_params["model_path"] = model_path
         self.model = Llama(**llama_params)

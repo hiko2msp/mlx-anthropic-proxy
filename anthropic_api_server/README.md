@@ -1,5 +1,7 @@
 # Anthropic-Compatible API Server with Dual Backend
 
+[![Python CI](https://github.com/<OWNER>/<REPO>/actions/workflows/ci.yml/badge.svg)](https://github.com/<OWNER>/<REPO>/actions/workflows/ci.yml)
+
 This project provides a high-performance, Anthropic Messages API compatible server that can be powered by two different inference backends: `llama-cpp-python` for broad CPU and GPU support, and `mlx-engine` for Apple Silicon Macs.
 
 ## Features
@@ -166,3 +168,32 @@ data: {"type":"message_stop", ...}
 ## Known Limitations
 
 -   **Token Usage Statistics**: The `usage` field in the API responses (`input_tokens` and `output_tokens`) is currently a placeholder and does not reflect the actual token count. This feature may be implemented in a future release.
+
+## Development & Testing
+
+This project uses `ruff` for linting and formatting, and `pytest` for unit testing.
+
+### Code Formatting and Linting
+
+First, install the development dependencies:
+```bash
+pip install ruff pytest httpx
+```
+
+To automatically format the code to match the project's style:
+```bash
+ruff format .
+```
+
+To check for linting errors:
+```bash
+ruff check .
+```
+
+### Running Tests
+
+To run the automated unit tests:
+```bash
+python -m pytest anthropic_api_server/tests
+```
+The tests are designed to run without needing to download a real model, as the inference backend is mocked.
