@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+pydantic
+llama-cpp-python
+huggingface-hub
+ruff
+pytest
+httpx

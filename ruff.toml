@@ -1,0 +1,21 @@
+# ruff.toml
+
+# Set the maximum line length.
+line-length = 88
+
+# Assume Python 3.11.
+target-version = "py311"
+
+[lint]
+# Enable Pyflakes `E` and `F` codes by default.
+# E722: do not use bare 'except'
+# E501: line too long, handled by formatter
+select = ["E", "W", "F", "I", "E722"]
+ignore = ["E501"]
+
+[format]
+# Use black-compatible formatting.
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "lf"
